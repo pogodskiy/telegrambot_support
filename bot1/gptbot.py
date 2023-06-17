@@ -1,16 +1,27 @@
 from aiogram import Bot, Dispatcher, types, executor
 import logging
-import openai
-from aiogram.dispatcher.filters import Text
+import os
 
+from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher.filters import Command
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from dotenv import load_dotenv
+from db.createdb import conn, cur
+
+storage = MemoryStorage()
 
 logging.basicConfig(level=logging.INFO)
+load_dotenv()
 
-bot = Bot(token='6216842834:AAFKLlJJlhh5lWvYlPPZXTD2ax0ZVm2Frk0')
-dp = Dispatcher(bot)
-openai.api_key = "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"
+bot = Bot(token=os.getenv("GPT_BOT_TOKEN"))
+admin_bot = Bot(token=os.getenv("ADMIN_TOKEN"))
+dp = Dispatcher(bot, storage=storage)
 
-@dp.message_handler(commands=["start"])
+class ChatState:
+    WithAdmin = "with_admin"
+
+# стартовый экран
+@dp.message_handler(Command("start"))
 async def start(message: types.Message):
     keyboard = types.InlineKeyboardMarkup()
     button1 = types.KeyboardButton(text='FAQ', callback_data='faq')
@@ -23,12 +34,19 @@ async def start(message: types.Message):
     await message.answer(welcome_message, reply_markup=keyboard)
 
 @dp.callback_query_handler(lambda c: c.data == 'faq')
-async def faq(callback_query: types.CallbackQuery):
-    with open("./faq.txt", 'r') as file:
-        text = file.readlines()
-    faq_text = '\n'.join(text)
-    await bot.send_message(callback_query.from_user.id, faq_text)
-    await bot.answer_callback_query(callback_query.id)
+async def faq(call: types.CallbackQuery):
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    button1 = types.KeyboardButton('Вернуться в главное меню')
+    keyboard.add(button1)
+    cur.execute("SELECT * FROM faq")
+    faq_text = cur.fetchall()
+    if faq_text:
+        # вывод faq
+        for num, faq in enumerate(faq_text, start=1):
+            await call.message.answer(f"{num}. Вопрос - {faq[1]}\n"
+                                      f"   Ответ - {faq[2]}\n", reply_markup=keyboard)
+    else:
+        await call.message.answer("Здесь пока нету вопросов \U0001F62A", reply_markup=keyboard)
 
 @dp.callback_query_handler(lambda c: c.data == 'support')
 async def support(call: types.CallbackQuery):
@@ -38,29 +56,36 @@ async def support(call: types.CallbackQuery):
     keyboard.add(button1, button2)
     await call.message.answer('Ниже выберите с кем хотите вести диалог', reply_markup=keyboard)
 
-@dp.message_handler(Text(equals="Чат с ChatGPT"))
-async def chat_gpt(message: types.Message):
-    await message.answer('Введите ваш запрос:')
-    response = openai.Completion.create(
-        model="text-davinci-003",
-        prompt=message.text,
-        temperature=0.5,
-        max_tokens=60,
-        top_p=1.0,
-        frequency_penalty=0.5,
-        presence_penalty=0.0,
-    )
-    response_text = response['choices'][0]['text']
-    await bot.send_message(chat_id=message.from_user.id, text=response_text)
+@dp.message_handler(text="Чат с администратором")
+async def start_chat_admin(message: types.Message, state: FSMContext):
+    await state.set_state(ChatState.WithAdmin)
 
-@dp.message_handler(Text(equals="Чат с администратором"))
-async def chat_admin(message: types.Message):
-    await message.answer('Сообщение отправлено администратору. Ожидайте ответа.')
+    # Добавляем сообщение пользователя в базу данных
+    if message.text != 'Чат с администратором':
+        cur.execute("INSERT INTO user_messages (user_id, user_name, question) VALUES (%s, %s, %s)",
+                (message.from_user.id, message.from_user.username, message.text))
+        conn.commit()
 
-    # Отправляем сообщение администратору через бота администратора
-    admin_bot_token = '6281769566:AAHTe4rx8EGL4jmmomv2q1moyGFnEjn_9Rs'
-    admin_bot = Bot(token=admin_bot_token)
-    await admin_bot.send_message(chat_id='2066654938', text=f"Пользователь {message.from_user.id} отправил вопрос: {message.text}")
+    await message.answer("Теперь вы можете общаться с администратором.")
+
+dp.message_handler()
+
+@dp.message_handler(lambda message: message.text == 'Вернуться в главное меню', state='*')
+async def back_to_menu(message: types.Message, state: FSMContext):
+    await state.finish()
+    await start(message)
+
+@dp.message_handler(state=ChatState.WithAdmin)
+async def chat_with_admin(message: types.Message):
+    # admin_chat_id = os.getenv('ADMIN_CHAT_ID')
+
+    # Отправляем сообщение пользователя администратору
+    # await admin_bot.send_message(chat_id=admin_chat_id, text=message.text)
+
+    # Добавляем сообщение пользователя в базу данных
+    cur.execute("INSERT INTO user_messages (user_id, user_name, question) VALUES (%s, %s, %s)",
+                (message.from_user.id, message.from_user.username, message.text))
+    conn.commit()
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
