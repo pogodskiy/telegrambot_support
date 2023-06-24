@@ -27,6 +27,7 @@ class FAQForm(StatesGroup):
     update_a = State()
     chat = State()
     chat_a = State()
+    chat_q = State()
     close = State()
 
 
@@ -214,7 +215,7 @@ async def confirm_delete(message: types.Message, state: FSMContext):
 
 @dp.callback_query_handler(lambda c: c.data == 'chats', state='*')
 async def chat(call: types.CallbackQuery, state: FSMContext):
-    cur.execute("SELECT user_name FROM user_messages GROUP BY user_name")
+    cur.execute("SELECT user_name FROM user_messages WHERE status_chat = 1 GROUP BY user_name")
     user_names = cur.fetchall()
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     names = ''
@@ -225,32 +226,31 @@ async def chat(call: types.CallbackQuery, state: FSMContext):
             names += new_name
         await call.message.answer(names)
         await FAQForm.chat.set()
-    elif call.message == 'Вернуться в главное меню':
+    elif call.message.text == 'Вернуться в главное меню':
         await state.finish()
         await start(call.message)
         keyboard.add(types.KeyboardButton('Вернуться в главное меню'))
     else:
         await call.message.answer("Нет активных чатов", reply_markup=keyboard)
 
+
 @dp.message_handler(state=FAQForm.chat)
 async def chat_with_user(message: types.Message, state: FSMContext):
     user_name = message.text
-    cur.execute(f"SELECT * FROM user_messages WHERE user_name = '{user_name}' AND answer IS NULL")
-    user_messages = cur.fetchall()
+    cur.execute(f"SELECT * FROM user_messages WHERE user_name = '{user_name}' AND status_message = 2 AND status_chat = 1")
+    user_message = cur.fetchall()
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
     button1 = types.KeyboardButton('Вернуться в главное меню')
-    keyboard.add(button1)
-
-    if user_messages:
-        for user_message in user_messages:
-            await message.answer(f'{user_message[4]}')
-        await message.answer('Введите ответ', )
+    button2 = types.KeyboardButton('Закрыть диалог')
+    keyboard.add(button1, button2)
+    if user_message:
+        await message.answer('Введите ответ', reply_markup=keyboard)
+        for mes in user_message:
+            await message.answer(f'{mes[4]}')
         # Сохраняем значение user_name в контексте состояния
         await state.update_data(user_name=user_name)
         # Установка состояния для диалога
         await FAQForm.chat_a.set()
-        # await state.finish()
-        # await start(message)
     else:
         await message.answer('Нет непрочитанных сообщений от пользователя')
         await state.finish()
@@ -260,27 +260,41 @@ async def chat_with_user(message: types.Message, state: FSMContext):
 @dp.message_handler(state=FAQForm.chat_a)
 async def add_answer(message: types.Message, state: FSMContext):
     keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    button1 = types.KeyboardButton('Закрыть диалог')
-    keyboard.add(button1)
+    button1 = types.KeyboardButton('Вернуться в главное меню')
+    button2 = types.KeyboardButton('Закрыть диалог')
+    keyboard.add(button1, button2)
     data = await state.get_data()
     user_name = data.get("user_name")  # Получаем значение user_name из контекста состояния
-    print(message.text)
-
-    cur.execute(f"UPDATE user_messages SET answer = '{message.text}',"
-                f" status_message = 0 WHERE status_message = 1 AND user_name = '{user_name}'")
-    conn.commit()
-    if message.text == 'Закрыть диалог':
+    print(message.text, message.chat.id)
+    # Получаем chat_id из базы данных
+    cur.execute(f"SELECT chat_id FROM user_messages WHERE user_name = '{user_name}'")
+    result = cur.fetchone()
+    user_chat_id = result[0] if result else None
+    print(user_chat_id)
+    await state.update_data(user_name=user_name)
+    if user_chat_id and message.text != 'Закрыть диалог':
+        cur.execute(
+            f"UPDATE user_messages SET status_message = 1, answer = '{message.text}' "
+            f"WHERE user_name = '{user_name}' AND status_message = 2 AND status_chat = 1")
+        conn.commit()
+        await message.answer('Ответ доставлен', reply_markup=keyboard)
+    else:
+        await state.reset_state(with_data=False)  # Сбросить состояние без удаления данных
         await FAQForm.close.set()
+        # await bot.send_message(message.from_user.id, message.chat.id)
+        # await bot.send_message(6064403394, message.text, reply_markup=keyboard)
 
-    await state.finish()
 
-@dp.message_handler(state=FAQForm.close)  # тут не хватает сосотояния
-async def close_dialog(message: types.Message):
+@dp.message_handler(lambda message: message.text == 'Закрыть диалог', state=FAQForm.close)
+async def close_dialog(message: types.Message, state: FSMContext):
     await message.answer('Диалог закрыт')
-    cur.execute(f"DELETE FROM user_messages WHERE user_name = '{name}'")  # name  будет браться из состояния
+    data = await state.get_data()
+    user_name = data.get("user_name")
+    print(user_name)
+    cur.execute(f"UPDATE user_messages SET status_chat=0 WHERE user_name = '{user_name}'")
     conn.commit()
+    await state.reset_state(with_data=False)  # Сбросить состояние без удаления данных
     await start(message)
-
 
 # при любом состоянии фраза вернуться в главное меню выдает стартовое сообщение с выбором действий
 @dp.message_handler(lambda message: message.text == 'Вернуться в главное меню', state='*')

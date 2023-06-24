@@ -10,11 +10,14 @@ cur = conn.cursor()
 cur.execute("""
     CREATE TABLE IF NOT EXISTS user_messages (
         id SERIAL PRIMARY KEY,
-        user_id INTEGER,
+        user_id BIGINT,
+        chat_id BIGINT,
         user_name TEXT,
         question TEXT,
-        ansewer TEXT
-    );
+        answer TEXT, 
+        status_message INTEGER DEFAULT 2,
+        status_chat INTEGER DEFAULT 1
+        );
 """)
 cur.execute("""
     CREATE TABLE IF NOT EXISTS faq (
@@ -24,7 +27,3 @@ cur.execute("""
     );
 """)
 conn.commit()
-
-# if __name__ == '__main__':
-#     main()
-
