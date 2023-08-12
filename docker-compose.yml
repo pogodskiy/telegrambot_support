@@ -4,26 +4,36 @@ services:
     image: redis
     ports:
       - '6379:6379'
-    networks:
-      - mynetwork
+    env_file:
+      - /configs/.env
 
-  telegrambot-bot1:
+  db:
+    restart: always
+    image: postgres:latest
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    env_file:
+      - /configs/.env
+    ports:
+      - 5432:5432
+
+  admin:
     build:
       context: ./bot1
-      dockerfile: Dockerfile.bot1
+      dockerfile: admin_bot/Dockerfile
     depends_on:
       - redis
-    networks:
-      - mynetwork
+      - db
+    env_file:
+      - /configs/.env
 
-  telegrambot-bot2:
+  user:
     build:
-      context: ./bot2
-      dockerfile: Dockerfile.bot2
+      dockerfile: user/Dockerfile
     depends_on:
       - redis
-    networks:
-      - mynetwork
+      - db
+    env_file:
+      - /configs/.env
 
-networks:
-  mynetwork:
+
